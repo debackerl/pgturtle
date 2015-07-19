@@ -83,6 +83,8 @@ func loadConfig(path string) {
 func main() {
 	var err error
 	
+	log.SetOutput(os.Stdout)
+	
 	kingpin.MustParse(appCmdLine.Parse(os.Args[1:]))
 	
 	loadConfig(*configPathArg)
