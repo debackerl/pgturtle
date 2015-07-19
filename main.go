@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"io/ioutil"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -23,6 +24,9 @@ var (
 	dbConfig pgx.ConnConfig
 	interrupt chan os.Signal
 	stop int32
+	quotedTableName string
+	fetchQuery string
+	fetchQueryArgs pgx.QueryArgs
 	db *pgx.Conn
 )
 
@@ -60,6 +64,20 @@ func loadConfig(path string) {
 	if err := toml.Unmarshal(buf, &config); err != nil {
 		log.Fatalln("Cannot decode configuration file:", err)
 	}
+	
+	quotedTableName = quoteIdentifier(config.Postgres.TableName)
+	
+	var q bytes.Buffer
+	q.WriteString(`UPDATE ` + quotedTableName + ` a SET begin_time=now(), status='running' FROM (SELECT task_id FROM ` + quotedTableName + ` WHERE status = 'queued' OR (status = 'running' AND begin_time <= now() - interval '10 seconds' - (CASE worker`)
+	for name, worker := range config.Workers {
+		q.WriteString(" WHEN ")
+		q.WriteString(fetchQueryArgs.Append(name))
+		q.WriteString(" THEN ")
+		q.WriteString(strconv.Itoa(worker.TimeoutSecs))
+	}
+	q.WriteString(` ELSE NULL END * interval '1 second')) ORDER BY insert_time LIMIT 1) b WHERE a.task_id = b.task_id RETURNING a.task_id,a.worker,a.parameters`)
+	
+	fetchQuery = q.String()
 }
 
 func main() {
@@ -77,6 +95,8 @@ func main() {
 	
 	interrupt = make(chan os.Signal, 1)
 	go signalHanlder()
+	
+	log.Println("pgturtle started.")
 	
 	for {
 		checkConnection()
@@ -98,7 +118,7 @@ func signalHanlder() {
 	atomic.StoreInt32(&stop, 1)
 }
 
-func process() {
+func process() bool {
 	var err error
 	var ok bool
 	
@@ -117,25 +137,18 @@ func process() {
 		log.Println(err)
 		db.Close()
 	}
+	
+	return err == nil
 }
 
 // returns true if a task has been processed
 func fetch_task() (bool, error) {
 	var err error
-	var tx *pgx.Tx
 	var rows *pgx.Rows
 	
-	if tx, err = db.Begin(); err != nil {
-		return false, fmt.Errorf("Could not open transaction: ", err.Error())
-	}
-	
-	defer tx.Rollback()
-	
-	if rows, err = tx.Query(`SELECT task_id,worker,parameters FROM ` + quoteIdentifier(config.Postgres.TableName) + ` WHERE status='queued' ORDER BY insert_time LIMIT 1`); err != nil {
+	if rows, err = db.Query(fetchQuery, fetchQueryArgs...); err != nil {
 		return false, fmt.Errorf("Could not query for tasks: ", err.Error())
 	}
-	
-	defer rows.Close()
 	
 	if rows.Next() {
 		var task_id int64
@@ -143,18 +156,22 @@ func fetch_task() (bool, error) {
 		var parameters []byte
 		
 		if err := rows.Scan(&task_id, &worker, &parameters); err != nil {
+			rows.Close()
 			return false, fmt.Errorf("Could not retrieve columns: ", err.Error())
 		}
 		
-		status, result := work(worker, parameters)
+		rows.Close()
 		
-		tx.Exec(`UPDATE ` + quoteIdentifier(config.Postgres.TableName) + ` SET status=$2,result=$3 WHERE task_id=$1`, task_id, status, result)
+		log.Println("Starting worker:", worker)
+		status, result := work(worker, parameters)
+		log.Println("Result:", status)
+		
+		if _, err := db.Exec(`UPDATE ` + quotedTableName + ` SET status=$2,result=$3,end_time=now() WHERE task_id=$1`, task_id, status, result); err != nil {
+			return false, fmt.Errorf("Could not update task: ", err.Error())
+		}
 	} else {
+		rows.Close()
 		return false, nil
-	}
-	
-	if err = tx.Commit(); err != nil {
-		return false, fmt.Errorf("Could not commit transaction: ", err.Error())
 	}
 	
 	return true, nil
@@ -229,14 +246,13 @@ func work(worker string, parameters []byte) (status string, result []byte) {
 func checkConnection() {
 	var err error
 	
-	for !db.IsAlive() {
+	for db == nil || !db.IsAlive() {
 		if db, err = pgx.Connect(dbConfig); err != nil {
 			log.Println("Could not open connection to database:", err)
 		} else if err = db.Listen(quoteIdentifier(config.Postgres.UpdatesChannelName)); err != nil {
 			log.Println("Could not listen to channel:", err)
 			db.Close()
-		} else {
-			process()
+		} else if process() {
 			break
 		}
 		

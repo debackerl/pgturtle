@@ -19,3 +19,21 @@ CREATE TYPE task_status AS ENUM
   'completed',
   'failed'
 );
+
+CREATE OR REPLACE FUNCTION tasks_notify_trigger()
+  RETURNS trigger AS
+$BODY$
+begin
+  IF NEW.status = 'queued' THEN
+	NOTIFY "pgturtle";
+  END IF;
+  RETURN NULL;
+end
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+
+CREATE TRIGGER tasks_inserted_trigger
+  AFTER INSERT OR UPDATE
+  ON tasks
+  FOR EACH ROW
+  EXECUTE PROCEDURE tasks_notify_trigger();
