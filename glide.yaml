@@ -1,0 +1,8 @@
+package: github.com/debackerl/pgturtle
+import:
+- package: github.com/jackc/pgx
+  version: ~2.9.0
+- package: github.com/naoina/toml
+  version: ~0.1.0
+- package: gopkg.in/alecthomas/kingpin.v1
+  version: ~2.2.3

@@ -103,12 +103,12 @@ func main() {
 	for {
 		checkConnection()
 		
+		process()
+		
 		_, err := db.WaitForNotification(time.Minute)
 		if err != nil && err != pgx.ErrNotificationTimeout {
 			log.Println("Could not wait for notification:", err)
 		}
-		
-		process()
 	}
 }
 
@@ -168,8 +168,14 @@ func fetch_task() (bool, error) {
 		status, result := work(worker, parameters)
 		log.Println("Result:", status)
 		
-		if _, err := db.Exec(`UPDATE ` + quotedTableName + ` SET status=$2,result=$3,end_time=now() WHERE task_id=$1`, task_id, status, result); err != nil {
-			return false, fmt.Errorf("Could not update task: ", err.Error())
+		for tentative := 0; ; tentative += 1 {
+			if _, err = db.Exec(`UPDATE ` + quotedTableName + ` SET status=$2,result=$3,end_time=now() WHERE task_id=$1`, task_id, status, result); err == nil {
+				break
+			} else if db.IsAlive() && tentative >= 1 {
+				return false, fmt.Errorf("Could not update task: ", err.Error())
+			}
+			
+			checkConnection()
 		}
 	} else {
 		rows.Close()
@@ -254,7 +260,7 @@ func checkConnection() {
 		} else if err = db.Listen(quoteIdentifier(config.Postgres.UpdatesChannelName)); err != nil {
 			log.Println("Could not listen to channel:", err)
 			db.Close()
-		} else if process() {
+		} else {
 			break
 		}
 		
