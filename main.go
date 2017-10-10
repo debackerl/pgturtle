@@ -257,7 +257,7 @@ func checkConnection() {
 	for db == nil || !db.IsAlive() {
 		if db, err = pgx.Connect(dbConfig); err != nil {
 			log.Println("Could not open connection to database:", err)
-		} else if err = db.Listen(quoteIdentifier(config.Postgres.UpdatesChannelName)); err != nil {
+		} else if err = db.Listen(config.Postgres.UpdatesChannelName); err != nil {
 			log.Println("Could not listen to channel:", err)
 			db.Close()
 		} else {
