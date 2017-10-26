@@ -205,7 +205,6 @@ func work(worker string, parameters pgx.NullHstore, data []byte) (status string,
 
 	if w.AllowParameters && parameters.Valid && len(parameters.Hstore) > 0 {
 		args = make([]string, 0, len(w.Arguments) + (len(parameters.Hstore) << 1))
-		args = append(args, w.Arguments...)
 
 		for k, v := range parameters.Hstore {
 			id := "--" + k
@@ -215,6 +214,8 @@ func work(worker string, parameters pgx.NullHstore, data []byte) (status string,
 				args = append(args, id)
 			}
 		}
+
+		args = append(args, w.Arguments...)
 	}
 
 	cmd := exec.Command(w.Command, args...)
