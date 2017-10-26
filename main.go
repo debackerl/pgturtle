@@ -156,7 +156,7 @@ func fetch_task() (bool, error) {
 	if rows.Next() {
 		var task_id int64
 		var worker string
-		var parameters pgx.Hstore
+		var parameters pgx.NullHstore
 		var data []byte
 		
 		if err := rows.Scan(&task_id, &worker, &parameters, &data); err != nil {
@@ -187,7 +187,7 @@ func fetch_task() (bool, error) {
 	return true, nil
 }
 
-func work(worker string, parameters pgx.Hstore, data []byte) (status string, result []byte) {
+func work(worker string, parameters pgx.NullHstore, data []byte) (status string, result []byte) {
 	var err error
 	var w Worker
 	var ok bool
@@ -203,13 +203,13 @@ func work(worker string, parameters pgx.Hstore, data []byte) (status string, res
 	
 	args := w.Arguments
 
-	if w.AllowParameters && parameters.Status == pgx.Present && len(parameters.Map) > 0 {
-		args = make([]byte, 0, len(w.Arguments) + (len(parameters.Map) << 1))
+	if w.AllowParameters && parameters.Valid && len(parameters.Hstore) > 0 {
+		args = make([]string, 0, len(w.Arguments) + (len(parameters.Hstore) << 1))
 		args = append(args, w.Arguments...)
 
-		for k, v := range parameters.Map {
+		for k, v := range parameters.Hstore {
 			id := "--" + k
-			if v.Status == pgx.Present {
+			if v.Valid {
 				args = append(args, id, v.String)
 			} else {
 				args = append(args, id)
