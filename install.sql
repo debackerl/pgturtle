@@ -6,7 +6,8 @@ CREATE TABLE tasks
   begin_time timestamp without time zone,
   end_time timestamp without time zone,
   status task_status NOT NULL DEFAULT 'queued'::task_status,
-  parameters bytea NOT NULL DEFAULT ''::bytea,
+  parameters hstore NOT NULL DEFAULT ''::hstore,
+  data bytea,
   result bytea,
   CONSTRAINT tasks_pkey PRIMARY KEY (task_id)
 );

@@ -42,6 +42,7 @@ var config struct {
 type Worker struct {
 	Command string
 	Arguments []string
+	AllowParameters bool
 	TimeoutSecs int
 }
 
@@ -75,7 +76,7 @@ func loadConfig(path string) {
 		q.WriteString(" THEN ")
 		q.WriteString(strconv.Itoa(worker.TimeoutSecs))
 	}
-	q.WriteString(` ELSE NULL END * interval '1 second')) ORDER BY insert_time LIMIT 1) b WHERE a.task_id = b.task_id RETURNING a.task_id,a.worker,a.parameters`)
+	q.WriteString(` ELSE NULL END * interval '1 second')) ORDER BY insert_time LIMIT 1) b WHERE a.task_id = b.task_id RETURNING a.task_id,a.worker,a.parameters,a.data`)
 	
 	fetchQuery = q.String()
 }
@@ -155,9 +156,10 @@ func fetch_task() (bool, error) {
 	if rows.Next() {
 		var task_id int64
 		var worker string
-		var parameters []byte
+		var parameters pgx.Hstore
+		var data []byte
 		
-		if err := rows.Scan(&task_id, &worker, &parameters); err != nil {
+		if err := rows.Scan(&task_id, &worker, &parameters, &data); err != nil {
 			rows.Close()
 			return false, fmt.Errorf("Could not retrieve columns: ", err.Error())
 		}
@@ -165,7 +167,7 @@ func fetch_task() (bool, error) {
 		rows.Close()
 		
 		log.Println("Starting worker:", worker)
-		status, result := work(worker, parameters)
+		status, result := work(worker, parameters, data)
 		log.Println("Result:", status)
 		
 		for tentative := 0; ; tentative += 1 {
@@ -185,7 +187,7 @@ func fetch_task() (bool, error) {
 	return true, nil
 }
 
-func work(worker string, parameters []byte) (status string, result []byte) {
+func work(worker string, parameters pgx.Hstore, data []byte) (status string, result []byte) {
 	var err error
 	var w Worker
 	var ok bool
@@ -199,7 +201,23 @@ func work(worker string, parameters []byte) (status string, result []byte) {
 		return
 	}
 	
-	cmd := exec.Command(w.Command, w.Arguments...)
+	args := w.Arguments
+
+	if w.AllowParameters && parameters.Status == pgx.Present && len(parameters.Map) > 0 {
+		args = make([]byte, 0, len(w.Arguments) + (len(parameters.Map) << 1))
+		args = append(args, w.Arguments...)
+
+		for k, v := range parameters.Map {
+			id := "--" + k
+			if v.Status == pgx.Present {
+				args = append(args, id, v.String)
+			} else {
+				args = append(args, id)
+			}
+		}
+	}
+
+	cmd := exec.Command(w.Command, args...)
 	
 	cmd.Stdout = &b
 	cmd.Stderr = &b
@@ -221,7 +239,7 @@ func work(worker string, parameters []byte) (status string, result []byte) {
 		})
 	}
 	
-	if _, err := stdin.Write(parameters); err != nil {
+	if _, err := stdin.Write(data); err != nil {
 		result = []byte("Could not write to standard input.")
 		return
 	}
